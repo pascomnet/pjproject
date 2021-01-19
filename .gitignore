@@ -1,0 +1,9 @@
+build.log
+build.mak
+config.log
+config.status
+build/*
+*/bin/*
+*/build/*
+*/include/*
+*/lib/*
