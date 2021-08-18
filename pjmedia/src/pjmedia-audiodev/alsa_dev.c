@@ -47,7 +47,7 @@
 #define MAX_MIX_NAME_LEN                64 
 
 /* Set to 1 to enable tracing */
-#define ENABLE_TRACING			0
+#define ENABLE_TRACING			1
 
 #if ENABLE_TRACING
 #	define TRACE_(expr)		PJ_LOG(5,expr)
