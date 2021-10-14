@@ -184,7 +184,7 @@ PJ_DEF(pj_status_t) pj_getaddrinfo(int af, const pj_str_t *nodename,
 
     rc = getaddrinfo(nodecopy, NULL, &hint, &res);
     if (rc != 0)
-	return PJ_ERESOLVE;
+		return PJ_ERESOLVE;
 
     orig_res = res;
 
@@ -198,7 +198,8 @@ PJ_DEF(pj_status_t) pj_getaddrinfo(int af, const pj_str_t *nodename,
 	    continue;
 
 	if (res->ai_socktype != pj_SOCK_DGRAM()
-                    && res->ai_socktype != pj_SOCK_STREAM()) {
+                    && res->ai_socktype != pj_SOCK_STREAM()
+					&& res->ai_socktype != hint.ai_socktype) {
 	        continue;
 	}
 
