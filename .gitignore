@@ -68,3 +68,6 @@ tests/pjsua/tools/cmp_wav
 tests/pjsua/tools/cmp_wav.dSYM
 tests/pjsua/logs
 .pcversion
+
+# Local build log
+build.log
