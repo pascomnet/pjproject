@@ -2655,7 +2655,7 @@ PJ_DEF(pj_status_t) pjmedia_stream_create( pjmedia_endpt *endpt,
 	stream->has_g722_mpeg_bug = PJ_TRUE;
 	stream->rtp_tx_ts_len_per_pkt *= opus_ts_modifier;
 	stream->rtp_rx_ts_len_per_frame *= opus_ts_modifier;
-	stream->detect_ptime_change = PJ_TRUE;
+	stream->detect_ptime_change = PJ_FALSE;
 #if defined(PJMEDIA_DTMF_DURATION_MSEC) && (PJMEDIA_DTMF_DURATION_MSEC > 0)
 	stream->dtmf_duration *= opus_ts_modifier;
 #endif
