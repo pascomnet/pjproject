@@ -359,6 +359,29 @@ static pj_status_t make_global_index(unsigned drv_idx,
     return PJ_SUCCESS;
 }
 
+/* Internal: convert local index to global device index.
+    This variant does not assert when a device does not exist anymore,
+    i.e. when ids change due to unplugging etc.
+    Instead it returns a suitable error status that can be handled accordingly. */
+static pj_status_t make_global_index2(unsigned drv_idx,
+                     pjmedia_aud_dev_index *id)
+{
+    if (*id < 0) {
+    return PJ_SUCCESS;
+    }
+
+    /* Check that factory still exists */
+    PJ_ASSERT_RETURN(aud_subsys.drv[drv_idx].f, PJ_EBUG);
+
+    /* Check that device index is valid */
+    if (!(*id>=0 && *id<(int)aud_subsys.drv[drv_idx].dev_cnt)) {
+        return PJ_EINVAL;
+    }
+
+    *id += aud_subsys.drv[drv_idx].start_idx;
+    return PJ_SUCCESS;
+}
+
 /* Internal: lookup device id */
 static pj_status_t lookup_dev(pjmedia_aud_dev_index id,
 			      pjmedia_aud_dev_factory **p_f,
@@ -585,8 +608,14 @@ PJ_DEF(pj_status_t) pjmedia_aud_stream_get_param(pjmedia_aud_stream *strm,
 	return status;
 
     /* Normalize device id's */
-    make_global_index(strm->sys.drv_idx, &param->rec_id);
-    make_global_index(strm->sys.drv_idx, &param->play_id);
+    status = make_global_index2(strm->sys.drv_idx, &param->rec_id);
+    if (status != PJ_SUCCESS) {
+        return status;
+    }
+    status = make_global_index2(strm->sys.drv_idx, &param->play_id);
+    if (status != PJ_SUCCESS) {
+        return status;
+    }
 
     return PJ_SUCCESS;
 }
