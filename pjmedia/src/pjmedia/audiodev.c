@@ -352,30 +352,8 @@ static pj_status_t make_global_index(unsigned drv_idx,
     PJ_ASSERT_RETURN(aud_subsys.drv[drv_idx].f, PJ_EBUG);
 
     /* Check that device index is valid */
-    PJ_ASSERT_RETURN(*id>=0 && *id<(int)aud_subsys.drv[drv_idx].dev_cnt, 
-		     PJ_EBUG);
-
-    *id += aud_subsys.drv[drv_idx].start_idx;
-    return PJ_SUCCESS;
-}
-
-/* Internal: convert local index to global device index.
-    This variant does not assert when a device does not exist anymore,
-    i.e. when ids change due to unplugging etc.
-    Instead it returns a suitable error status that can be handled accordingly. */
-static pj_status_t make_global_index2(unsigned drv_idx,
-                     pjmedia_aud_dev_index *id)
-{
-    if (*id < 0) {
-    return PJ_SUCCESS;
-    }
-
-    /* Check that factory still exists */
-    PJ_ASSERT_RETURN(aud_subsys.drv[drv_idx].f, PJ_EBUG);
-
-    /* Check that device index is valid */
     if (!(*id>=0 && *id<(int)aud_subsys.drv[drv_idx].dev_cnt)) {
-        return PJ_EINVAL;
+        return PJMEDIA_AUD_INVALID_DEV;
     }
 
     *id += aud_subsys.drv[drv_idx].start_idx;
@@ -388,6 +366,7 @@ static pj_status_t lookup_dev(pjmedia_aud_dev_index id,
 			      unsigned *p_local_index)
 {
     int f_id, index;
+    pj_status_t status;
 
     if (id < 0) {
 	unsigned i;
@@ -399,19 +378,28 @@ static pj_status_t lookup_dev(pjmedia_aud_dev_index id,
 	    pjmedia_aud_driver *drv = &aud_subsys.drv[i];
 	    if (drv->dev_idx >= 0) {
 		id = drv->dev_idx;
-		make_global_index(i, &id);
+        status = make_global_index(i, &id);
+        if (status != PJ_SUCCESS) {
+            return status;
+        }
 		break;
 	    } else if (id==PJMEDIA_AUD_DEFAULT_CAPTURE_DEV && 
 		drv->rec_dev_idx >= 0) 
 	    {
 		id = drv->rec_dev_idx;
-		make_global_index(i, &id);
+        status = make_global_index(i, &id);
+        if (status != PJ_SUCCESS) {
+            return status;
+        }
 		break;
 	    } else if (id==PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV && 
 		drv->play_dev_idx >= 0) 
 	    {
 		id = drv->play_dev_idx;
-		make_global_index(i, &id);
+        status = make_global_index(i, &id);
+        if (status != PJ_SUCCESS) {
+            return status;
+        }
 		break;
 	    }
 	}
@@ -462,6 +450,7 @@ PJ_DEF(pj_status_t) pjmedia_aud_dev_lookup( const char *drv_name,
 {
     pjmedia_aud_dev_factory *f = NULL;
     unsigned drv_idx, dev_idx;
+    pj_status_t status;
 
     PJ_ASSERT_RETURN(drv_name && dev_name && id, PJ_EINVAL);
     PJ_ASSERT_RETURN(aud_subsys.pf, PJMEDIA_EAUD_INIT);
@@ -478,7 +467,6 @@ PJ_DEF(pj_status_t) pjmedia_aud_dev_lookup( const char *drv_name,
 
     for (dev_idx=0; dev_idx<aud_subsys.drv[drv_idx].dev_cnt; ++dev_idx) {
 	pjmedia_aud_dev_info info;
-	pj_status_t status;
 
 	status = f->op->get_dev_info(f, dev_idx, &info);
 	if (status != PJ_SUCCESS)
@@ -492,7 +480,10 @@ PJ_DEF(pj_status_t) pjmedia_aud_dev_lookup( const char *drv_name,
 	return PJ_ENOTFOUND;
 
     *id = dev_idx;
-    make_global_index(drv_idx, id);
+    status = make_global_index(drv_idx, id);;
+    if (status != PJ_SUCCESS) {
+        return status;
+    }
 
     return PJ_SUCCESS;
 }
@@ -519,8 +510,14 @@ PJ_DEF(pj_status_t) pjmedia_aud_dev_default_param(pjmedia_aud_dev_index id,
 	return status;
 
     /* Normalize device IDs */
-    make_global_index(f->sys.drv_idx, &param->rec_id);
-    make_global_index(f->sys.drv_idx, &param->play_id);
+    status = make_global_index(f->sys.drv_idx, &param->rec_id);
+    if (status != PJ_SUCCESS) {
+        return status;
+    }
+    status = make_global_index(f->sys.drv_idx, &param->play_id);
+    if (status != PJ_SUCCESS) {
+        return status;
+    }
 
     return PJ_SUCCESS;
 }
@@ -608,11 +605,11 @@ PJ_DEF(pj_status_t) pjmedia_aud_stream_get_param(pjmedia_aud_stream *strm,
 	return status;
 
     /* Normalize device id's */
-    status = make_global_index2(strm->sys.drv_idx, &param->rec_id);
+    status = make_global_index(strm->sys.drv_idx, &param->rec_id);
     if (status != PJ_SUCCESS) {
         return status;
     }
-    status = make_global_index2(strm->sys.drv_idx, &param->play_id);
+    status = make_global_index(strm->sys.drv_idx, &param->play_id);
     if (status != PJ_SUCCESS) {
         return status;
     }
