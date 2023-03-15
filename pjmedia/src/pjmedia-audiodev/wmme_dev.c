@@ -285,6 +285,11 @@ static void get_dev_names(pjmedia_aud_dev_factory *f)
 				   wf->dev_info[i].info.name, 
 				   sizeof(wf->dev_info[i].info.name));
 
+		pj_unicode_to_ansi(wf->dev_info[i].endpointId, 
+				   wcslen(wf->dev_info[i].endpointId), 
+				   wf->dev_info[i].info.id, 
+				   sizeof(wf->dev_info[i].info.id));
+
 		break;
 	    }
 	}
