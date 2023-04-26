@@ -317,6 +317,7 @@ fi
 
 if test "${IS_USING_LLVM}" = "1"; then
   # llvm
+  # CL-3506 adjust build to work with NDK 25
   # STDCPP_TC="${ANDROID_NDK_ROOT}/sources/cxx-stl/llvm-libc++"
   if [ "$(uname)" = "Darwin" ]; then
     STDCPP_TC="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib"
