@@ -317,10 +317,25 @@ fi
 
 if test "${IS_USING_LLVM}" = "1"; then
   # llvm
-  STDCPP_TC="${ANDROID_NDK_ROOT}/sources/cxx-stl/llvm-libc++"
+  # STDCPP_TC="${ANDROID_NDK_ROOT}/sources/cxx-stl/llvm-libc++"
+  if [ "$(uname)" = "Darwin" ]; then
+    STDCPP_TC="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib"
+  elif [ "$(uname)" = "Linux" ]; then
+    STDCPP_TC="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
+  else
+    echo "error: unsupported host os in use, unable to configure pjproject build!"
+    exit 1
+  fi
   #STDCPP_CFLAGS="-I${STDCPP_TC}/include"
   #STDCPP_LIBS="-lc++_static -lc++abi"
-  STDCPP_LIBS="${STDCPP_TC}/libs/${TARGET_ABI}/libc++_shared.so"
+  # STDCPP_LIBS="${STDCPP_TC}/libs/${TARGET_ABI}/libc++_shared.so"
+  if test "${TARGET_ABI}" = "arm64-v8a"; then
+    LLVM_ABI="aarch64-linux-android"
+  fi
+  if test "${TARGET_ABI}" = "armeabi-v7a"; then
+    LLVM_ABI="arm-linux-androideabi"
+  fi
+  STDCPP_LIBS="${STDCPP_TC}/${LLVM_ABI}/libc++_shared.so"
   #STDCPP_LDFLAGS="-L${STDCPP_TC}/libs/${TARGET_ABI}/"
 else
   # gnustl
@@ -332,7 +347,7 @@ fi
 
 # stlport
 #STDCPP_CFLAGS="-I${ANDROID_NDK_ROOT}/sources/cxx-stl/stlport/stlport"
-#STDCPP_LIBS="-lstlport_static -ldl"
+#STDCPP_LIBS="-lstlport_static -ldl" tn
 #STDCPP_LDFLAGS="-L${ANDROID_NDK_ROOT}/sources/cxx-stl/stlport/libs/${TARGET_ABI}"
 
 export CFLAGS="${CFLAGS}"
