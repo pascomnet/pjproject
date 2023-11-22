@@ -537,18 +537,38 @@ static pj_status_t ca_factory_refresh(pjmedia_aud_dev_factory *f)
         struct coreaudio_dev_info *cdi;
         Float64 sampleRate;
 
-        cdi = &cf->dev_info[i];
-        pj_bzero(cdi, sizeof(*cdi));
-        cdi->dev_id = dev_ids[i];
+    cdi = &cf->dev_info[i];
+    pj_bzero(cdi, sizeof(*cdi));
+    cdi->dev_id = dev_ids[i];
+    
+    /* Get device unique id */
+    addr.mSelector = kAudioDevicePropertyDeviceUID;
+    addr.mScope = kAudioObjectPropertyScopeGlobal;
+    addr.mElement = kAudioObjectPropertyElementMaster;
 
-        /* Get device name */
-        addr.mSelector = kAudioDevicePropertyDeviceName;
-        addr.mScope = kAudioObjectPropertyScopeGlobal;
-        addr.mElement = kAudioObjectPropertyElementMaster;
-        size = sizeof(cdi->info.name);
-        AudioObjectGetPropertyData(cdi->dev_id, &addr,
-                                   0, NULL,
-                                   &size, (void *)cdi->info.name);
+    CFStringRef uid;
+    size = sizeof(CFStringRef);
+
+    ostatus = AudioObjectGetPropertyData(cdi->dev_id, &addr, 0, NULL, &size, &uid);
+
+    if (ostatus == noErr) {
+        Boolean success = CFStringGetCString(uid, cdi->info.nativeId, sizeof(cdi->info.nativeId), kCFStringEncodingUTF8);
+        if(!success) {
+                PJ_LOG(1, (THIS_FILE, "failed to copy id to buffer"));
+        }
+    } else {
+        PJ_LOG(1, (THIS_FILE, " failed to copy id to buffer"));
+    }
+    CFRelease(uid);
+    
+    /* Get device name */
+    addr.mSelector = kAudioDevicePropertyDeviceName;
+    addr.mScope = kAudioObjectPropertyScopeGlobal;
+    addr.mElement = kAudioObjectPropertyElementMaster;
+    size = sizeof(cdi->info.name);
+	AudioObjectGetPropertyData(cdi->dev_id, &addr,
+				   0, NULL,
+			           &size, (void *)cdi->info.name);
 
         pj_ansi_strxcpy(cdi->info.driver, "core audio",
                         sizeof(cdi->info.driver));
