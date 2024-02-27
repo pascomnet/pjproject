@@ -298,9 +298,9 @@ static pj_status_t ca_factory_init(pjmedia_aud_dev_factory *f)
         cdi->info.default_samples_per_sec = 8000;
 
         /* Set the device capabilities here */
+        // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
         cdi->info.caps = PJMEDIA_AUD_DEV_CAP_INPUT_LATENCY |
                          PJMEDIA_AUD_DEV_CAP_OUTPUT_LATENCY |
-                         PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING |
 #if USE_AUDIO_SESSION_API != 0
                          PJMEDIA_AUD_DEV_CAP_INPUT_ROUTE |
                          PJMEDIA_AUD_DEV_CAP_OUTPUT_ROUTE |
@@ -651,11 +651,7 @@ static pj_status_t ca_factory_refresh(pjmedia_aud_dev_factory *f)
         }
         if (cdi->info.output_count > 0) {
             cdi->info.caps |= PJMEDIA_AUD_DEV_CAP_OUTPUT_LATENCY;
-            addr.mSelector = kAudioDevicePropertyVolumeScalar;
-            addr.mScope = kAudioDevicePropertyScopeOutput;
-            if (AudioObjectHasProperty(cdi->dev_id, &addr)) {
-                cdi->info.caps |= PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING;
-            }
+            // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
         }
         if (cf->has_vpio) {
             cdi->info.caps |= PJMEDIA_AUD_DEV_CAP_EC;
@@ -1798,11 +1794,7 @@ static pj_status_t ca_factory_create_stream(pjmedia_aud_dev_factory *f,
                           PJMEDIA_AUD_DEV_CAP_OUTPUT_LATENCY,
                           &strm->param.output_latency_ms);
     }
-    if (param->flags & PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING) {
-        ca_stream_set_cap(&strm->base,
-                          PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING,
-                          &param->output_vol);
-    }
+    // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
 
     pj_mutex_lock(strm->cf->mutex);
     pj_assert(pj_list_empty(&strm->list_entry));
@@ -1841,11 +1833,7 @@ static pj_status_t ca_stream_get_param(pjmedia_aud_stream *s,
     {
         pi->flags |= PJMEDIA_AUD_DEV_CAP_OUTPUT_LATENCY;
     }
-    if (ca_stream_get_cap(s, PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING,
-                          &pi->output_vol) == PJ_SUCCESS)
-    {
-        pi->flags |= PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING;
-    }
+    // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
     if (ca_stream_get_cap(s, PJMEDIA_AUD_DEV_CAP_INPUT_ROUTE,
                           &pi->input_route) == PJ_SUCCESS)
     {
@@ -1958,31 +1946,8 @@ static pj_status_t ca_stream_get_cap(pjmedia_aud_stream *s,
     } else if (cap==PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING &&
                (strm->param.dir & PJMEDIA_DIR_PLAYBACK))
     {
-#if COREAUDIO_MAC
-        OSStatus ostatus;
-        Float32 volume;
-        UInt32 size = sizeof(Float32);
-
-        /* Output volume setting */
-        ostatus = AudioUnitGetProperty (strm->io_units[1] ? strm->io_units[1] :
-                                        strm->io_units[0],
-                                        kAudioDevicePropertyVolumeScalar,
-                                        kAudioUnitScope_Output,
-                                        0,
-                                        &volume,
-                                        &size);
-        if (ostatus != noErr)
-            return PJMEDIA_AUDIODEV_ERRNO_FROM_COREAUDIO(ostatus);
-
-        *(unsigned*)pval = (unsigned)(volume * 100);
-        return PJ_SUCCESS;
-#else
-        if ([strm->sess respondsToSelector:@selector(outputVolume)]) {
-            *(unsigned*)pval = (unsigned)([strm->sess outputVolume] * 100);
-            return PJ_SUCCESS;
-        } else
-            return PJMEDIA_EAUD_INVCAP;
-#endif
+        // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
+          return PJMEDIA_EAUD_INVCAP;
 
 #if !COREAUDIO_MAC
 #if USE_AUDIO_SESSION_API != 0

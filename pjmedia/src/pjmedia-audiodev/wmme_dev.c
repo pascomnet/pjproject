@@ -367,9 +367,7 @@ static void build_dev_info(UINT deviceId, struct wmme_dev_info *wdi,
         wdi->info.output_count = woc->wChannels;
         wdi->info.caps |= PJMEDIA_AUD_DEV_CAP_OUTPUT_LATENCY;
         
-        if (woc->dwSupport & WAVECAPS_VOLUME) {
-            wdi->info.caps |= PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING;
-        }
+        // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
 
         /* Sometimes a device can return a rediculously large number of 
          * channels. This happened with an SBLive card on a Windows ME box.
@@ -1327,11 +1325,7 @@ static pj_status_t factory_create_stream(pjmedia_aud_dev_factory *f,
     }
 
     /* Apply the remaining settings */
-    if (param->flags & PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING) {
-        stream_set_cap(&strm->base, PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING,
-                       &param->output_vol);
-    }
-
+    // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
 
     /* Done */
     strm->base.op = &stream_op;
@@ -1351,12 +1345,7 @@ static pj_status_t stream_get_param(pjmedia_aud_stream *s,
     pj_memcpy(pi, &strm->param, sizeof(*pi));
     
     /* Update the volume setting */
-    if (stream_get_cap(s, PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING,
-                      &pi->output_vol) == PJ_SUCCESS)
-    {
-        pi->flags |= PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING;
-    }
-
+    // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
     return PJ_SUCCESS;
 }
 
@@ -1384,19 +1373,8 @@ static pj_status_t stream_get_cap(pjmedia_aud_stream *s,
     } else if (cap==PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING &&
                strm->play_strm.hWave.Out)
     {
-        /* Output volume setting */
-        DWORD waveVol;
-        MMRESULT mr;
+        // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
 
-        mr = waveOutGetVolume(strm->play_strm.hWave.Out, &waveVol);
-        if (mr != MMSYSERR_NOERROR) {
-            return PJMEDIA_AUDIODEV_ERRNO_FROM_WMME_OUT(mr);
-        }
-
-        waveVol &= 0xFFFF;
-        *(unsigned*)pval = (waveVol * 100) / 0xFFFF;
-        return PJ_SUCCESS;
-    } else {
         return PJMEDIA_EAUD_INVCAP;
     }
 }
@@ -1409,31 +1387,7 @@ static pj_status_t stream_set_cap(pjmedia_aud_stream *s,
     struct wmme_stream *strm = (struct wmme_stream*)s;
 
     PJ_ASSERT_RETURN(s && pval, PJ_EINVAL);
-
-    if (cap==PJMEDIA_AUD_DEV_CAP_OUTPUT_VOLUME_SETTING &&
-        strm->play_strm.hWave.Out)
-    {
-        /* Output volume setting */
-        unsigned vol = *(unsigned*)pval;
-        DWORD waveVol;
-        MMRESULT mr;
-        pj_status_t status;
-
-        if (vol > 100)
-            vol = 100;
-
-        waveVol = (vol * 0xFFFF) / 100;
-        waveVol |= (waveVol << 16);
-
-        mr = waveOutSetVolume(strm->play_strm.hWave.Out, waveVol);
-        status = (mr==MMSYSERR_NOERROR)? PJ_SUCCESS : 
-                                PJMEDIA_AUDIODEV_ERRNO_FROM_WMME_OUT(mr);
-        if (status == PJ_SUCCESS) {
-            strm->param.output_vol = *(unsigned*)pval;
-        }
-        return status;
-    }
-
+    // CL-3970 disable volume capability, to avoid weird behavior with OS volume controls
     return PJMEDIA_EAUD_INVCAP;
 }
 
