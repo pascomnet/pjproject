@@ -281,7 +281,8 @@ static void udp_on_read_complete( pj_ioqueue_key_t *key,
                 /* Report error to endpoint if this is not EWOULDBLOCK error.*/
                 if (status != PJ_STATUS_FROM_OS(OSERR_EWOULDBLOCK) &&
                     status != PJ_STATUS_FROM_OS(OSERR_EINPROGRESS) && 
-                    status != PJ_STATUS_FROM_OS(OSERR_ECONNRESET)) 
+                    status != PJ_STATUS_FROM_OS(OSERR_ECONNRESET) && 
+                    status != PJ_STATUS_FROM_OS(OSERR_ENOTCONN)) // CL-3898 get rid of some logspam
                 {
                     PJSIP_ENDPT_LOG_ERROR((rdata->tp_info.transport->endpt,
                                            rdata->tp_info.transport->obj_name,
