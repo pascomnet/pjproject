@@ -494,7 +494,7 @@ pjmedia_endpt_create_audio_sdp(pjmedia_endpt *endpt,
         /* Rearrange dynamic payload type to make sure it is inside 96-127
          * range and not being used by other codec/tel-event.
          */
-        if (pt >= 96) {
+        if (pt >= 96 && pt != 107 /* Opus exception */) {
             unsigned pt_check = 96;
             unsigned j = 0;
             while (j < used_pt_num && pt_check <= 127) {
