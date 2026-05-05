@@ -31,6 +31,7 @@
 
 #include <AudioUnit/AudioUnit.h>
 #include <AudioToolbox/AudioConverter.h>
+#include <pjmedia/resample.h>
 #if COREAUDIO_MAC
     #include <CoreAudio/CoreAudio.h>
 #else
@@ -140,9 +141,8 @@ struct coreaudio_stream
     AudioStreamBasicDescription  streamFormat;
     AudioBufferList             *audio_buf;
 
-    AudioConverterRef            resample;
+    pjmedia_resample            *resample;
     pj_int16_t                  *resample_buf;
-    void                        *resample_buf_ptr;
     unsigned                     resample_buf_count;
     unsigned                     resample_buf_size;
     
@@ -734,27 +734,6 @@ static pj_status_t ca_factory_default_param(pjmedia_aud_dev_factory *f,
     return PJ_SUCCESS;
 }
 
-OSStatus resampleProc(AudioConverterRef             inAudioConverter,
-                      UInt32                        *ioNumberDataPackets,
-                      AudioBufferList               *ioData,
-                      AudioStreamPacketDescription  **outDataPacketDescription,
-                      void                          *inUserData)
-{
-    struct coreaudio_stream *strm = (struct coreaudio_stream*)inUserData;
-
-    if (*ioNumberDataPackets > strm->resample_buf_size)
-        *ioNumberDataPackets = strm->resample_buf_size;
-
-    ioData->mNumberBuffers = 1;
-    ioData->mBuffers[0].mNumberChannels = strm->streamFormat.mChannelsPerFrame;
-    ioData->mBuffers[0].mData = strm->resample_buf_ptr;
-    ioData->mBuffers[0].mDataByteSize = *ioNumberDataPackets *
-                                        strm->streamFormat.mChannelsPerFrame *
-                                        strm->param.bits_per_sample >> 3;
-
-    return noErr;
-}
-
 static OSStatus resample_callback(void                       *inRefCon,
                                   AudioUnitRenderActionFlags *ioActionFlags,
                                   const AudioTimeStamp       *inTimeStamp,
@@ -812,20 +791,12 @@ static OSStatus resample_callback(void                       *inRefCon,
 
     if (nsamples >= resampleSize) {
         pjmedia_frame frame;
-        UInt32 resampleOutput = strm->param.samples_per_frame /
-                                strm->streamFormat.mChannelsPerFrame;
-        AudioBufferList ab;
 
         frame.type = PJMEDIA_FRAME_TYPE_AUDIO;
         frame.buf = (void*) strm->rec_buf;
         frame.size = strm->param.samples_per_frame *
                      strm->param.bits_per_sample >> 3;
         frame.bit_info = 0;
-        
-        ab.mNumberBuffers = 1;
-        ab.mBuffers[0].mNumberChannels = strm->streamFormat.mChannelsPerFrame;
-        ab.mBuffers[0].mData = strm->rec_buf;
-        ab.mBuffers[0].mDataByteSize = frame.size;
 
         /* If buffer is not empty, combine the buffer with the just incoming
          * samples, then call put_frame.
@@ -836,17 +807,8 @@ static OSStatus resample_callback(void                       *inRefCon,
                                  input, chunk_count);
 
             /* Do the resample */
-
-            strm->resample_buf_ptr = strm->resample_buf;
-            ostatus = AudioConverterFillComplexBuffer(strm->resample,
-                                                      resampleProc,
-                                                      strm,
-                                                      &resampleOutput,
-                                                      &ab,
-                                                      NULL);
-            if (ostatus != noErr) {
-                goto on_break;
-            }
+            pjmedia_resample_run(strm->resample, strm->resample_buf,
+                                 strm->rec_buf);
             frame.timestamp.u64 = strm->rec_timestamp.u64;
 
             status = (*strm->rec_cb)(strm->user_data, &frame);
@@ -864,19 +826,7 @@ static OSStatus resample_callback(void                       *inRefCon,
             frame.timestamp.u64 = strm->rec_timestamp.u64;
             
             /* Do the resample */
-            strm->resample_buf_ptr = input;
-            ab.mBuffers[0].mDataByteSize = frame.size;
-            resampleOutput = strm->param.samples_per_frame /
-                             strm->streamFormat.mChannelsPerFrame;
-            ostatus = AudioConverterFillComplexBuffer(strm->resample,
-                                                      resampleProc,
-                                                      strm,
-                                                      &resampleOutput,
-                                                      &ab,
-                                                      NULL);
-            if (ostatus != noErr) {
-                goto on_break;
-            }       
+            pjmedia_resample_run(strm->resample, input, strm->rec_buf);
             
             status = (*strm->rec_cb)(strm->user_data, &frame);
             
@@ -1291,34 +1241,45 @@ static void interruptionListener(void *inClientData, UInt32 inInterruption)
 #endif
 
 #if COREAUDIO_MAC
-/* Internal: create audio converter for resampling the recorder device */
+/* Internal: create pjmedia software resampler for the recorder device.
+ * Replaces the AudioConverter-based approach which crashes in the caulk
+ * audio allocator on macOS 26+ (EXC_BAD_INSTRUCTION in tiered_allocator). */
 static pj_status_t create_audio_resample(struct coreaudio_stream     *strm,
                                          AudioStreamBasicDescription *desc)
 {
-    OSStatus ostatus;
+    pj_status_t status;
 
     pj_assert(strm->streamFormat.mSampleRate != desc->mSampleRate);
     pj_assert(NULL == strm->resample);
     pj_assert(NULL == strm->resample_buf);
 
-    /* Create the audio converter */
-    ostatus = AudioConverterNew(desc, &strm->streamFormat, &strm->resample);
-    if (ostatus != noErr) {
-        return PJMEDIA_AUDIODEV_ERRNO_FROM_COREAUDIO(ostatus);
-    }
-    
+    strm->resample_buf_size = (unsigned)((pj_uint64_t)desc->mSampleRate *
+                                          strm->param.samples_per_frame /
+                                          strm->param.clock_rate);
+
+    status = pjmedia_resample_create(strm->pool,
+                                     PJ_TRUE,   /* high_quality */
+                                     PJ_FALSE,  /* large_filter */
+                                     strm->param.channel_count,
+                                     (unsigned)desc->mSampleRate,
+                                     strm->param.clock_rate,
+                                     strm->resample_buf_size,
+                                     &strm->resample);
+    if (status != PJ_SUCCESS)
+        return status;
+
     /*
      * Allocate the buffer required to hold enough input data
      */
-    strm->resample_buf_size =  (unsigned)(desc->mSampleRate *
-                                          strm->param.samples_per_frame /
-                                          strm->param.clock_rate);
     strm->resample_buf = (pj_int16_t*)
                          pj_pool_alloc(strm->pool,
                                        strm->resample_buf_size *
                                        strm->param.bits_per_sample >> 3);
-    if (!strm->resample_buf)
+    if (!strm->resample_buf) {
+        pjmedia_resample_destroy(strm->resample);
+        strm->resample = NULL;
         return PJ_ENOMEM;
+    }
     strm->resample_buf_count = 0;
 
     return PJ_SUCCESS;
@@ -1470,7 +1431,8 @@ static pj_status_t create_audio_unit(AudioComponent io_comp,
                                         &deviceFormat,
                                         &size);
         if (ostatus == noErr) {
-            if (strm->streamFormat.mSampleRate != deviceFormat.mSampleRate) {
+            if (!strm->param.ec_enabled &&
+                strm->streamFormat.mSampleRate != deviceFormat.mSampleRate) {
                 AudioStreamBasicDescription resampleSrcFormat;
 
                 PJ_LOG(4, (THIS_FILE, "Creating audio resample from %d to %d",
@@ -1479,17 +1441,11 @@ static pj_status_t create_audio_unit(AudioComponent io_comp,
 
                 /* On macOS 26+ the AU may return its native hardware format
                  * (e.g. Float32, non-interleaved, multi-channel) even after
-                 * we set it to our signed-int format.  Passing that raw
-                 * deviceFormat to AudioConverterNew triggers a combined
-                 * format+channel+sample-rate conversion whose internal EABL
-                 * buffer-size calculation overflows in the caulk allocator,
-                 * causing EXC_BAD_INSTRUCTION (SIGILL).
-                 *
-                 * Fix: build a source descriptor that is identical to our
-                 * destination format (strm->streamFormat) except for the
-                 * sample rate, so AudioConverter only has to resample.
-                 * Re-apply this normalised format to the AU so it actually
-                 * delivers data in the format our resample callback expects.
+                 * we set it to our signed-int format.  Build a normalised
+                 * source descriptor identical to our stream format but with
+                 * the device sample rate, and re-apply it to the AU so the
+                 * resample callback receives int16 data at the device rate.
+                 * The pjmedia software resampler then converts to clock_rate.
                  */
                 resampleSrcFormat = strm->streamFormat;
                 resampleSrcFormat.mSampleRate   = deviceFormat.mSampleRate;
@@ -2195,12 +2151,6 @@ static pj_status_t ca_stream_start(pjmedia_aud_stream *strm)
     stream->play_buf_count = 0;
     stream->resample_buf_count = 0;
 
-    if (stream->resample) {
-        ostatus = AudioConverterReset(stream->resample);
-        if (ostatus != noErr)
-            return PJMEDIA_AUDIODEV_ERRNO_FROM_COREAUDIO(ostatus);
-    }
-
 #if !COREAUDIO_MAC
     if ([stream->sess setActive:true error:nil] != YES) {
         PJ_LOG(4, (THIS_FILE, "Warning: cannot activate audio session"));
@@ -2309,7 +2259,7 @@ static pj_status_t ca_stream_destroy(pjmedia_aud_stream *strm)
     }
 
     if (stream->resample)
-        AudioConverterDispose(stream->resample);
+        pjmedia_resample_destroy(stream->resample);
 
     pj_mutex_lock(stream->cf->mutex);
     if (!pj_list_empty(&stream->list_entry))
