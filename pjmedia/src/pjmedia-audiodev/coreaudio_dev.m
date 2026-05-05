@@ -1471,10 +1471,46 @@ static pj_status_t create_audio_unit(AudioComponent io_comp,
                                         &size);
         if (ostatus == noErr) {
             if (strm->streamFormat.mSampleRate != deviceFormat.mSampleRate) {
+                AudioStreamBasicDescription resampleSrcFormat;
+
                 PJ_LOG(4, (THIS_FILE, "Creating audio resample from %d to %d",
                            (int)deviceFormat.mSampleRate,
                            (int)strm->streamFormat.mSampleRate));
-                pj_status_t rc = create_audio_resample(strm, &deviceFormat);
+
+                /* On macOS 26+ the AU may return its native hardware format
+                 * (e.g. Float32, non-interleaved, multi-channel) even after
+                 * we set it to our signed-int format.  Passing that raw
+                 * deviceFormat to AudioConverterNew triggers a combined
+                 * format+channel+sample-rate conversion whose internal EABL
+                 * buffer-size calculation overflows in the caulk allocator,
+                 * causing EXC_BAD_INSTRUCTION (SIGILL).
+                 *
+                 * Fix: build a source descriptor that is identical to our
+                 * destination format (strm->streamFormat) except for the
+                 * sample rate, so AudioConverter only has to resample.
+                 * Re-apply this normalised format to the AU so it actually
+                 * delivers data in the format our resample callback expects.
+                 */
+                resampleSrcFormat = strm->streamFormat;
+                resampleSrcFormat.mSampleRate   = deviceFormat.mSampleRate;
+                resampleSrcFormat.mBytesPerPacket =
+                    resampleSrcFormat.mBytesPerFrame *
+                    resampleSrcFormat.mFramesPerPacket;
+
+                ostatus = AudioUnitSetProperty(*io_unit,
+                                               kAudioUnitProperty_StreamFormat,
+                                               kAudioUnitScope_Output,
+                                               1,
+                                               &resampleSrcFormat,
+                                               sizeof(resampleSrcFormat));
+                if (ostatus != noErr) {
+                    PJ_LOG(3, (THIS_FILE, "Failed re-setting stream format "
+                               "for resample on device %d, error: %d",
+                               dev_id, ostatus));
+                    return PJMEDIA_AUDIODEV_ERRNO_FROM_COREAUDIO(ostatus);
+                }
+
+                pj_status_t rc = create_audio_resample(strm, &resampleSrcFormat);
                 if (PJ_SUCCESS != rc) {
                     PJ_LOG(3, (THIS_FILE, "Failed creating resample %d",
                                rc));
