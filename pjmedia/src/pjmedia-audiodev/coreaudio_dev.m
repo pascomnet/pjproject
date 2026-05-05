@@ -34,6 +34,7 @@
 #include <pjmedia/resample.h>
 #if COREAUDIO_MAC
     #include <CoreAudio/CoreAudio.h>
+    #import  <Foundation/Foundation.h>
 #else
     #include <AVFoundation/AVAudioSession.h>
 
@@ -1717,6 +1718,24 @@ static pj_status_t ca_factory_create_stream(pjmedia_aud_dev_factory *f,
          */
         if (param->channel_count > 1) {
             strm->param.ec_enabled = PJ_FALSE;
+        }
+        /* On macOS 26+, AudioUnitInitialize for VPIO internally calls
+         * AudioConverterNew for sample-rate conversion (device rate → clock
+         * rate), which triggers an assertion in the caulk audio allocator and
+         * causes EXC_BAD_INSTRUCTION (SIGILL).  Fall back to AUHAL; pjsua's
+         * software AEC remains active via the echo canceller port.
+         */
+        {
+            NSOperatingSystemVersion v26 = {26, 0, 0};
+            if (strm->param.ec_enabled &&
+                [[NSProcessInfo processInfo]
+                    isOperatingSystemAtLeastVersion:v26])
+            {
+                strm->param.ec_enabled = PJ_FALSE;
+                PJ_LOG(3, (THIS_FILE,
+                           "macOS 26+: VPIO disabled to avoid caulk allocator "
+                           "crash; using AUHAL with software EC"));
+            }
         }
 #endif
         status = ca_stream_set_cap(&strm->base,
