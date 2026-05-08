@@ -273,8 +273,18 @@ static pj_status_t ca_factory_init(pjmedia_aud_dev_factory *f)
         return PJMEDIA_EAUD_INIT; // cannot find IO unit;
 
     desc.componentSubType = kAudioUnitSubType_VoiceProcessingIO;
-    if (AudioComponentFindNext(NULL, &desc) != NULL)
-        cf->has_vpio = PJ_TRUE;
+    if (AudioComponentFindNext(NULL, &desc) != NULL) {
+#if COREAUDIO_MAC
+        /* On macOS 26+, AudioUnitInitialize for VPIO internally triggers
+         * AudioConverterNew which overflows a size calculation and raises
+         * EXC_BAD_INSTRUCTION (SIGILL) in caulk's tiered allocator.  Mark
+         * VPIO as unavailable so callers fall back to AUHAL + software AEC.
+         */
+        NSOperatingSystemVersion v26 = {26, 0, 0};
+        if (![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:v26])
+#endif
+            cf->has_vpio = PJ_TRUE;
+    }
 
     status = ca_factory_refresh(f);
     if (status != PJ_SUCCESS)
@@ -1434,43 +1444,47 @@ static pj_status_t create_audio_unit(AudioComponent io_comp,
         if (ostatus == noErr) {
             if (!strm->param.ec_enabled &&
                 strm->streamFormat.mSampleRate != deviceFormat.mSampleRate) {
-                AudioStreamBasicDescription resampleSrcFormat;
 
+                pj_status_t rc;
                 PJ_LOG(4, (THIS_FILE, "Creating audio resample from %d to %d",
                            (int)deviceFormat.mSampleRate,
                            (int)strm->streamFormat.mSampleRate));
 
-                /* On macOS 26+ the AU may return its native hardware format
-                 * (e.g. Float32, non-interleaved, multi-channel) even after
-                 * we set it to our signed-int format.  Build a normalised
-                 * source descriptor identical to our stream format but with
-                 * the device sample rate, and re-apply it to the AU so the
-                 * resample callback receives int16 data at the device rate.
-                 * The pjmedia software resampler then converts to clock_rate.
+                /* The callback assumes a packed interleaved int16 buffer
+                 * (pj_int16_t* cast at line 797).  Compare every layout field
+                 * of the returned format against what we require; if anything
+                 * other than the sample rate differs (non-interleaved, float,
+                 * wrong bit depth, wrong channel count, …) re-assert the
+                 * exact int16 format at the device rate so the AU delivers
+                 * data the callback can safely interpret.
                  */
-                resampleSrcFormat = strm->streamFormat;
-                resampleSrcFormat.mSampleRate   = deviceFormat.mSampleRate;
-                resampleSrcFormat.mBytesPerPacket =
-                    resampleSrcFormat.mBytesPerFrame *
-                    resampleSrcFormat.mFramesPerPacket;
-
-                ostatus = AudioUnitSetProperty(*io_unit,
-                                               kAudioUnitProperty_StreamFormat,
-                                               kAudioUnitScope_Output,
-                                               1,
-                                               &resampleSrcFormat,
-                                               sizeof(resampleSrcFormat));
-                if (ostatus != noErr) {
-                    PJ_LOG(3, (THIS_FILE, "Failed re-setting stream format "
-                               "for resample on device %d, error: %d",
-                               dev_id, ostatus));
-                    return PJMEDIA_AUDIODEV_ERRNO_FROM_COREAUDIO(ostatus);
+                if (deviceFormat.mFormatID         != strm->streamFormat.mFormatID        ||
+                    deviceFormat.mFormatFlags       != strm->streamFormat.mFormatFlags      ||
+                    deviceFormat.mBitsPerChannel    != strm->streamFormat.mBitsPerChannel   ||
+                    deviceFormat.mChannelsPerFrame  != strm->streamFormat.mChannelsPerFrame ||
+                    deviceFormat.mBytesPerFrame     != strm->streamFormat.mBytesPerFrame    ||
+                    deviceFormat.mFramesPerPacket   != strm->streamFormat.mFramesPerPacket)
+                {
+                    AudioStreamBasicDescription normalizedFormat = strm->streamFormat;
+                    normalizedFormat.mSampleRate = deviceFormat.mSampleRate;
+                    ostatus = AudioUnitSetProperty(*io_unit,
+                                                   kAudioUnitProperty_StreamFormat,
+                                                   kAudioUnitScope_Output,
+                                                   1,
+                                                   &normalizedFormat,
+                                                   sizeof(normalizedFormat));
+                    if (ostatus != noErr) {
+                        PJ_LOG(3, (THIS_FILE, "Failed setting int16 capture "
+                                   "format on device %d (err %d); AU may "
+                                   "deliver incompatible buffer layout",
+                                   dev_id, (int)ostatus));
+                        return PJMEDIA_AUDIODEV_ERRNO_FROM_COREAUDIO(ostatus);
+                    }
                 }
 
-                pj_status_t rc = create_audio_resample(strm, &resampleSrcFormat);
+                rc = create_audio_resample(strm, &deviceFormat);
                 if (PJ_SUCCESS != rc) {
-                    PJ_LOG(3, (THIS_FILE, "Failed creating resample %d",
-                               rc));
+                    PJ_LOG(3, (THIS_FILE, "Failed creating resample %d", rc));
                     return rc;
                 }
             }
@@ -1719,11 +1733,9 @@ static pj_status_t ca_factory_create_stream(pjmedia_aud_dev_factory *f,
         if (param->channel_count > 1) {
             strm->param.ec_enabled = PJ_FALSE;
         }
-        /* On macOS 26+, AudioUnitInitialize for VPIO internally calls
-         * AudioConverterNew for sample-rate conversion (device rate → clock
-         * rate), which triggers an assertion in the caulk audio allocator and
-         * causes EXC_BAD_INSTRUCTION (SIGILL).  Fall back to AUHAL; pjsua's
-         * software AEC remains active via the echo canceller port.
+        /* Safety guard: on macOS 26+, has_vpio is already false so ec_enabled
+         * should never be true here.  Force AUHAL anyway in case the flag is
+         * set by some other path, since VPIO crashes on initialisation.
          */
         {
             NSOperatingSystemVersion v26 = {26, 0, 0};
@@ -1734,7 +1746,7 @@ static pj_status_t ca_factory_create_stream(pjmedia_aud_dev_factory *f,
                 strm->param.ec_enabled = PJ_FALSE;
                 PJ_LOG(3, (THIS_FILE,
                            "macOS 26+: VPIO disabled to avoid caulk allocator "
-                           "crash; using AUHAL with software EC"));
+                           "crash; using AUHAL"));
             }
         }
 #endif
