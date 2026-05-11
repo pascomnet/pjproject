@@ -146,6 +146,7 @@ struct coreaudio_stream
     pj_int16_t                  *resample_buf;
     unsigned                     resample_buf_count;
     unsigned                     resample_buf_size;
+    unsigned                     resample_in_rate;
     
 #if !COREAUDIO_MAC
     AVAudioSession              *sess;
@@ -277,8 +278,8 @@ static pj_status_t ca_factory_init(pjmedia_aud_dev_factory *f)
 #if COREAUDIO_MAC
         /* On macOS 26+, AudioUnitInitialize for VPIO internally triggers
          * AudioConverterNew which overflows a size calculation and raises
-         * EXC_BAD_INSTRUCTION (SIGILL) in caulk's tiered allocator.  Mark
-         * VPIO as unavailable so callers fall back to AUHAL + software AEC.
+         * EXC_BAD_INSTRUCTION (SIGILL) in caulk's tiered allocator. Mark
+         * VPIO as unavailable so callers fall back to AUHAL without EC.
          */
         NSOperatingSystemVersion v26 = {26, 0, 0};
         if (![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:v26])
@@ -1252,27 +1253,33 @@ static void interruptionListener(void *inClientData, UInt32 inInterruption)
 #endif
 
 #if COREAUDIO_MAC
-/* Internal: create pjmedia software resampler for the recorder device.
- * Replaces the AudioConverter-based approach which crashes in the caulk
- * audio allocator on macOS 26+ (EXC_BAD_INSTRUCTION in tiered_allocator). */
+/* Internal: create pjmedia software resampler for recorder sample-rate
+ * conversion. This replaces the AudioConverter-based path which crashes in
+ * the caulk audio allocator on macOS 26+ (EXC_BAD_INSTRUCTION in
+ * tiered_allocator).
+ */
 static pj_status_t create_audio_resample(struct coreaudio_stream     *strm,
                                          AudioStreamBasicDescription *desc)
 {
     pj_status_t status;
+    unsigned resample_buf_size;
 
     pj_assert(strm->streamFormat.mSampleRate != desc->mSampleRate);
     pj_assert(NULL == strm->resample);
-    pj_assert(NULL == strm->resample_buf);
+    resample_buf_size = (unsigned)((pj_uint64_t)desc->mSampleRate *
+                                   strm->param.samples_per_frame /
+                                   strm->param.clock_rate);
+    pj_assert(NULL == strm->resample_buf ||
+              strm->resample_buf_size == resample_buf_size);
 
-    strm->resample_buf_size = (unsigned)((pj_uint64_t)desc->mSampleRate *
-                                          strm->param.samples_per_frame /
-                                          strm->param.clock_rate);
+    strm->resample_in_rate = (unsigned)desc->mSampleRate;
+    strm->resample_buf_size = resample_buf_size;
 
     status = pjmedia_resample_create(strm->pool,
                                      PJ_TRUE,   /* high_quality */
                                      PJ_FALSE,  /* large_filter */
                                      strm->param.channel_count,
-                                     (unsigned)desc->mSampleRate,
+                                     strm->resample_in_rate,
                                      strm->param.clock_rate,
                                      strm->resample_buf_size,
                                      &strm->resample);
@@ -1282,18 +1289,36 @@ static pj_status_t create_audio_resample(struct coreaudio_stream     *strm,
     /*
      * Allocate the buffer required to hold enough input data
      */
-    strm->resample_buf = (pj_int16_t*)
-                         pj_pool_alloc(strm->pool,
-                                       strm->resample_buf_size *
-                                       strm->param.bits_per_sample >> 3);
     if (!strm->resample_buf) {
-        pjmedia_resample_destroy(strm->resample);
-        strm->resample = NULL;
-        return PJ_ENOMEM;
+        strm->resample_buf = (pj_int16_t*)
+                             pj_pool_alloc(strm->pool,
+                                           strm->resample_buf_size *
+                                           strm->param.bits_per_sample >> 3);
+        if (!strm->resample_buf) {
+            pjmedia_resample_destroy(strm->resample);
+            strm->resample = NULL;
+            return PJ_ENOMEM;
+        }
     }
     strm->resample_buf_count = 0;
 
     return PJ_SUCCESS;
+}
+
+static pj_status_t reset_audio_resample(struct coreaudio_stream *strm)
+{
+    AudioStreamBasicDescription desc;
+
+    pj_assert(strm->resample != NULL);
+    pj_assert(strm->resample_in_rate != 0);
+
+    pjmedia_resample_destroy(strm->resample);
+    strm->resample = NULL;
+
+    pj_bzero(&desc, sizeof(desc));
+    desc.mSampleRate = strm->resample_in_rate;
+
+    return create_audio_resample(strm, &desc);
 }
 #endif
 
@@ -1734,8 +1759,8 @@ static pj_status_t ca_factory_create_stream(pjmedia_aud_dev_factory *f,
             strm->param.ec_enabled = PJ_FALSE;
         }
         /* Safety guard: on macOS 26+, has_vpio is already false so ec_enabled
-         * should never be true here.  Force AUHAL anyway in case the flag is
-         * set by some other path, since VPIO crashes on initialisation.
+         * should never be true here. Force AUHAL anyway in case the flag is
+         * set by some other path, since VPIO crashes on initialization.
          */
         {
             NSOperatingSystemVersion v26 = {26, 0, 0};
@@ -1746,7 +1771,7 @@ static pj_status_t ca_factory_create_stream(pjmedia_aud_dev_factory *f,
                 strm->param.ec_enabled = PJ_FALSE;
                 PJ_LOG(3, (THIS_FILE,
                            "macOS 26+: VPIO disabled to avoid caulk allocator "
-                           "crash; using AUHAL"));
+                           "crash; using AUHAL without EC"));
             }
         }
 #endif
@@ -2171,6 +2196,7 @@ static pj_status_t ca_stream_start(pjmedia_aud_stream *strm)
 {
     struct coreaudio_stream *stream = (struct coreaudio_stream*)strm;
     OSStatus ostatus;
+    pj_status_t status;
     UInt32 i;
 
     if (stream->running)
@@ -2181,6 +2207,12 @@ static pj_status_t ca_stream_start(pjmedia_aud_stream *strm)
     stream->rec_buf_count = 0;
     stream->play_buf_count = 0;
     stream->resample_buf_count = 0;
+
+    if (stream->resample) {
+        status = reset_audio_resample(stream);
+        if (status != PJ_SUCCESS)
+            return status;
+    }
 
 #if !COREAUDIO_MAC
     if ([stream->sess setActive:true error:nil] != YES) {
