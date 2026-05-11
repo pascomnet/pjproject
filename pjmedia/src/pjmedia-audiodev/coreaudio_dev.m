@@ -156,6 +156,14 @@ struct coreaudio_stream
 /* Static variable */
 static struct coreaudio_factory *cf_instance = NULL;
 
+#if COREAUDIO_MAC
+static pj_bool_t vpio_supported(void)
+{
+    NSOperatingSystemVersion v26 = {26, 0, 0};
+    return ![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:v26];
+}
+#endif
+
 /* Prototypes */
 static pj_status_t ca_factory_init(pjmedia_aud_dev_factory *f);
 static pj_status_t ca_factory_destroy(pjmedia_aud_dev_factory *f);
@@ -281,8 +289,7 @@ static pj_status_t ca_factory_init(pjmedia_aud_dev_factory *f)
          * EXC_BAD_INSTRUCTION (SIGILL) in caulk's tiered allocator. Mark
          * VPIO as unavailable so callers fall back to AUHAL without EC.
          */
-        NSOperatingSystemVersion v26 = {26, 0, 0};
-        if (![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:v26])
+        if (vpio_supported())
 #endif
             cf->has_vpio = PJ_TRUE;
     }
@@ -1763,10 +1770,7 @@ static pj_status_t ca_factory_create_stream(pjmedia_aud_dev_factory *f,
          * set by some other path, since VPIO crashes on initialization.
          */
         {
-            NSOperatingSystemVersion v26 = {26, 0, 0};
-            if (strm->param.ec_enabled &&
-                [[NSProcessInfo processInfo]
-                    isOperatingSystemAtLeastVersion:v26])
+            if (strm->param.ec_enabled && !vpio_supported())
             {
                 strm->param.ec_enabled = PJ_FALSE;
                 PJ_LOG(3, (THIS_FILE,
@@ -2073,9 +2077,19 @@ static pj_status_t ca_stream_set_cap(pjmedia_aud_stream *s,
     if (cap==PJMEDIA_AUD_DEV_CAP_EC) {
         AudioComponentDescription desc;
         AudioComponent io_comp;
+        pj_bool_t ec_enabled = *(pj_bool_t*)pval;
+
+#if COREAUDIO_MAC
+        if (ec_enabled && !vpio_supported()) {
+            ec_enabled = PJ_FALSE;
+            PJ_LOG(3, (THIS_FILE,
+                       "macOS 26+: ignoring request for VPIO; using AUHAL "
+                       "without EC"));
+        }
+#endif
         
         desc.componentType = kAudioUnitType_Output;
-        desc.componentSubType = (*(pj_bool_t*)pval)?
+        desc.componentSubType = ec_enabled?
                                 kAudioUnitSubType_VoiceProcessingIO :
 #if COREAUDIO_MAC
                                 kAudioUnitSubType_HALOutput;
@@ -2090,7 +2104,7 @@ static pj_status_t ca_stream_set_cap(pjmedia_aud_stream *s,
         if (io_comp == NULL)
             return PJMEDIA_AUDIODEV_ERRNO_FROM_COREAUDIO(-1);
         strm->cf->io_comp = io_comp;
-        strm->param.ec_enabled = *(pj_bool_t*)pval;
+        strm->param.ec_enabled = ec_enabled;
         
         PJ_LOG(4, (THIS_FILE, "Using %s audio unit",
                    (desc.componentSubType ==
